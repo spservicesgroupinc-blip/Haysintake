@@ -22,6 +22,7 @@ interface JobSummaryModalProps {
   onClose: () => void;
   data: IntakeFormData;
   milestones: CalculatedMilestones;
+  onCreateChangeOrder?: () => void;
 }
 
 export const JobSummaryModal: React.FC<JobSummaryModalProps> = ({
@@ -29,6 +30,7 @@ export const JobSummaryModal: React.FC<JobSummaryModalProps> = ({
   onClose,
   data,
   milestones,
+  onCreateChangeOrder,
 }) => {
   if (!isOpen) return null;
 
@@ -47,7 +49,18 @@ export const JobSummaryModal: React.FC<JobSummaryModalProps> = ({
               Executive Job Intake Summary
             </h3>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5">
+            {onCreateChangeOrder && (
+              <button
+                type="button"
+                onClick={onCreateChangeOrder}
+                className="px-3 py-1.5 text-xs font-bold bg-[#D32F2F] hover:bg-[#B71C1C] text-white rounded-lg transition-colors inline-flex items-center gap-1.5 shadow-xs cursor-pointer"
+                title="Open Change Order page with this customer's details"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>Create Change Order</span>
+              </button>
+            )}
             <button
               onClick={handlePrint}
               className="px-3 py-1.5 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-100 rounded-lg border border-slate-700 transition-colors inline-flex items-center gap-1.5"

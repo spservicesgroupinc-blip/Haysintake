@@ -28,13 +28,18 @@ import {
   Eye,
   Check,
   ExternalLink,
-  Code
+  Code,
+  Sparkles,
+  FileEdit,
+  FilePlus2
 } from 'lucide-react';
 import HaysSonsLogo, { HaysSonsBadge } from './components/HaysSonsLogo';
 import MilestoneWidget, { formatCurrency } from './components/MilestoneWidget';
 import SubmissionModal from './components/SubmissionModal';
 import JobSummaryModal from './components/JobSummaryModal';
 import AppsScriptCodeModal from './components/AppsScriptCodeModal';
+import TemplateGuideModal from './components/TemplateGuideModal';
+import ChangeOrderPage from './components/ChangeOrderPage';
 import { 
   IntakeFormData, 
   CalculatedMilestones, 
@@ -73,12 +78,14 @@ const INITIAL_FORM_DATA: IntakeFormData = {
   lossType: 'Water',
   dateOfLoss: new Date().toISOString().split('T')[0],
   lossNarrative: '',
+  templateDocId: '',
 };
 
 // 1. Apps Script Project & Deployment Config
 const APPSCRIPT_PROJECT_ID = "1WL8Apt_HSfeEi6Z5J_NSCrI5exG08Woa1T39Xi_Pc6L9kcgpiCRNUrh-";
 const APPSCRIPT_PROJECT_URL = `https://script.google.com/d/${APPSCRIPT_PROJECT_ID}/edit`;
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz0EAVvMK4RBfz3vSCyX2Ut9RNkvwZUqJnT16IHb3h90vm5ebIzY_mCJH8eUtUDUVQhKg/exec";
+const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz0RnU8_ASKJqTD3V559-EE0jlkcslTPNI0vfTs0O4OetbQIhYjTRRtup_VT5b6jGo3zw/exec";
+const SCRIPT_URL = DEFAULT_SCRIPT_URL;
 
 async function submitJobPacket(formData: any) {
   const payload = JSON.stringify({
@@ -133,6 +140,7 @@ export default function App() {
     return INITIAL_FORM_DATA;
   });
 
+  const [currentPage, setCurrentPage] = useState<'intake' | 'change_order'>('intake');
   const [activeTab, setActiveTab] = useState<number>(1);
   const [accordionOpen, setAccordionOpen] = useState<{ [key: number]: boolean }>({
     1: true,
@@ -155,6 +163,17 @@ export default function App() {
   const [summaryModalOpen, setSummaryModalOpen] = useState(false);
   // Apps Script code helper modal
   const [scriptModalOpen, setScriptModalOpen] = useState(false);
+  // Template & Merge Tags guide modal
+  const [templateGuideOpen, setTemplateGuideOpen] = useState(false);
+  const [templateDocId, setTemplateDocId] = useState<string>(() => {
+    return localStorage.getItem('hays_master_template_doc_id') || '';
+  });
+
+  const handleSaveTemplateDocId = (newId: string) => {
+    setTemplateDocId(newId);
+    localStorage.setItem('hays_master_template_doc_id', newId);
+    handleChange('templateDocId', newId);
+  };
 
   // Auto-save draft
   useEffect(() => {
@@ -310,6 +329,7 @@ export default function App() {
         lossType: formData.lossType,
         dateOfLoss: formData.dateOfLoss,
         lossNarrative: formData.lossNarrative?.trim() || '',
+        templateDocId: (templateDocId || formData.templateDocId || '').trim(),
 
         submittedAt: new Date().toISOString(),
         portalSource: 'Hays + Sons Official Estimator Portal v2.6',
@@ -326,7 +346,12 @@ export default function App() {
         setApiResponse({
           success: true,
           folderUrl: result.folderUrl || '',
+          customerName: result.customerName || formData.customerName.trim(),
+          jobNumber: result.jobNumber || formData.jobNumber.trim(),
+          templateDocId: result.templateDocId,
+          templateDocName: result.templateDocName,
           files: result.files || (result.folderUrl ? {
+            templateFilledUrl: result.files?.templateFilledUrl,
             sraUrl: result.files?.sraUrl || result.folderUrl,
             mortgageAuthUrl: result.files?.mortgageAuthUrl || result.folderUrl,
             productionChecklistUrl: result.files?.productionChecklistUrl || result.folderUrl,
@@ -380,15 +405,60 @@ export default function App() {
           <div className="flex items-center gap-4 w-full sm:w-auto justify-between sm:justify-start">
             <HaysSonsLogo size="md" />
             <div className="hidden md:block h-7 w-px bg-slate-200" />
-            <span className="hidden md:inline-block text-xs font-semibold uppercase tracking-wider text-slate-500">
-              Restoration Estimator Intake Portal
-            </span>
+            
+            {/* Main Portal View Switcher */}
+            <nav className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200">
+              <button
+                type="button"
+                onClick={() => setCurrentPage('intake')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all inline-flex items-center gap-1.5 ${
+                  currentPage === 'intake'
+                    ? 'bg-white text-[#D32F2F] shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Job Intake Packet</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setCurrentPage('change_order')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all inline-flex items-center gap-1.5 ${
+                  currentPage === 'change_order'
+                    ? 'bg-white text-[#D32F2F] shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+                title="Create a Change Order automatically filled with this job's information"
+              >
+                <FileEdit className="w-3.5 h-3.5 text-[#D32F2F]" />
+                <span>Change Order</span>
+                <span className="hidden sm:inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-100 text-[#D32F2F]">
+                  Auto-Fill
+                </span>
+              </button>
+            </nav>
           </div>
 
           {/* Estimator Quick Profile Badge / Header Action */}
           <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end">
             {/* Quick Review Sheet & Connected Script Badges */}
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setTemplateGuideOpen(true)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-amber-50 text-amber-900 border border-amber-300 hover:bg-amber-100 transition-colors shadow-xs"
+                title="Configure Master Google Doc Template & browse all merge tags"
+              >
+                <FileText className="w-3.5 h-3.5 text-amber-700" />
+                <span>Template & Tags</span>
+                {templateDocId ? (
+                  <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse" title="Master Template Connected" />
+                ) : (
+                  <span className="w-2 h-2 rounded-full bg-amber-500" />
+                )}
+              </button>
+
               <button
                 type="button"
                 onClick={() => setScriptModalOpen(true)}
@@ -442,8 +512,49 @@ export default function App() {
 
       {/* Main Workspace */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {/* Page Context Banner */}
-        <div className="mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-200">
+        {currentPage === 'change_order' ? (
+          <ChangeOrderPage
+            currentJobData={formData}
+            scriptUrl={SCRIPT_URL}
+            onNavigateBack={() => setCurrentPage('intake')}
+            onOpenScriptModal={() => setScriptModalOpen(true)}
+          />
+        ) : (
+          <>
+            {/* Change Order Callout Banner */}
+            <div className="mb-6 bg-gradient-to-r from-red-50 via-amber-50 to-red-50 border border-red-200/80 rounded-xl p-3.5 px-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-lg bg-[#D32F2F] text-white flex items-center justify-center shrink-0 shadow-xs">
+                  <FileEdit className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-slate-900 uppercase tracking-wide">
+                      Each Form May Require A Change Order
+                    </span>
+                    <span className="text-[10px] bg-red-100 text-[#D32F2F] font-bold px-2 py-0.5 rounded-full">
+                      Automated Customer Sync
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 mt-0.5">
+                    {formData.customerName 
+                      ? `Syncs directly with ${formData.customerName} (Job #${formData.jobNumber || 'PENDING'}). Only input the scope details and dollar amount.`
+                      : 'Have scope modifications or an insurance supplement? Opens a dedicated Change Order form pre-filled with customer & job data.'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCurrentPage('change_order')}
+                className="px-4 py-2 bg-[#D32F2F] hover:bg-[#B71C1C] text-white text-xs font-bold rounded-lg transition-colors inline-flex items-center justify-center gap-1.5 shrink-0 shadow-xs cursor-pointer"
+              >
+                <FileEdit className="w-3.5 h-3.5" />
+                <span>Create Change Order</span>
+              </button>
+            </div>
+
+            {/* Page Context Banner */}
+            <div className="mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-200">
           <div>
             <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#D32F2F]">
               <span>Official Document Automation</span>
@@ -483,6 +594,45 @@ export default function App() {
               Full Form View
             </button>
           </div>
+        </div>
+
+        {/* Master Template Integration Run Banner */}
+        <div className="mb-6 bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white rounded-xl p-3.5 px-4 shadow-sm border border-slate-700 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-[#D32F2F] flex items-center justify-center shrink-0 shadow-xs">
+              <FileText className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-white uppercase tracking-wider">
+                  Master Google Doc Template Run Engine
+                </span>
+                {templateDocId ? (
+                  <span className="text-[10px] bg-emerald-950 text-emerald-300 border border-emerald-500/40 px-2 py-0.5 rounded-full font-bold flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                    Template Connected
+                  </span>
+                ) : (
+                  <span className="text-[10px] bg-slate-800 text-slate-300 border border-slate-600 px-2 py-0.5 rounded-full font-semibold">
+                    Standard Branded Letterhead Mode
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-slate-300 mt-0.5">
+                {templateDocId 
+                  ? `Active Template: ${templateDocId.substring(0, 36)}... (clones & populates all {{tags}} directly into customer folder)` 
+                  : 'Have a pre-made Google Doc template? Set it up once and the system will clone and populate it on every run.'}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setTemplateGuideOpen(true)}
+            className="w-full sm:w-auto px-3.5 py-1.5 bg-[#D32F2F] hover:bg-[#B71C1C] text-white text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5 shrink-0 shadow-xs cursor-pointer"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>{templateDocId ? 'Manage Template & Tags' : 'Set Up Master Template'}</span>
+          </button>
         </div>
 
         {/* 2-Column Grid: Form on Left (8 cols) + Real-time Milestone Card on Right (4 cols) */}
@@ -1406,6 +1556,8 @@ export default function App() {
             </div>
           </div>
         </div>
+          </>
+        )}
       </main>
 
       {/* Footer */}
@@ -1434,9 +1586,14 @@ export default function App() {
         error={apiError}
         scriptProjectId={APPSCRIPT_PROJECT_ID}
         onOpenScriptModal={() => setScriptModalOpen(true)}
+        onOpenTemplateGuide={() => setTemplateGuideOpen(true)}
         onClose={() => setSubmissionModalOpen(false)}
         onRetry={() => handleSubmit()}
         onStartNew={handleStartNew}
+        onCreateChangeOrder={() => {
+          setSubmissionModalOpen(false);
+          setCurrentPage('change_order');
+        }}
       />
 
       {/* Apps Script Code & Deployment Guide Modal */}
@@ -1447,12 +1604,26 @@ export default function App() {
         scriptUrl={SCRIPT_URL}
       />
 
+      {/* Template Guide & Merge Tags Modal */}
+      <TemplateGuideModal
+        isOpen={templateGuideOpen}
+        onClose={() => setTemplateGuideOpen(false)}
+        templateDocId={templateDocId}
+        onSaveTemplateDocId={handleSaveTemplateDocId}
+        formData={formData}
+        milestones={milestones}
+      />
+
       {/* Printable Sheet Modal */}
       <JobSummaryModal
         isOpen={summaryModalOpen}
         onClose={() => setSummaryModalOpen(false)}
         data={formData}
         milestones={milestones}
+        onCreateChangeOrder={() => {
+          setSummaryModalOpen(false);
+          setCurrentPage('change_order');
+        }}
       />
     </div>
   );

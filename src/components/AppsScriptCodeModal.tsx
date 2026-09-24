@@ -70,7 +70,12 @@ function doPost(e) {
       rawData = e.parameter;
     }
 
-    var result = processIntakeData(rawData);
+    var result;
+    if (rawData.packetType === 'CHANGE_ORDER' || rawData.isChangeOrder) {
+      result = processChangeOrder(rawData);
+    } else {
+      result = processIntakeData(rawData);
+    }
 
     return ContentService
       .createTextOutput(JSON.stringify(result))
@@ -164,7 +169,30 @@ function processIntakeData(data) {
   var sraDoc = generateSRA(currentJobFolder, jobNum, clientName, address, phone, email, todayStr, contractAmt, insPortion, deductible, downPayment, midPayment, adjuster, claimNum, carrier, estimator, gm);
   var checklistDoc = generateProductionChecklist(currentJobFolder, jobNum, clientName, address, phone, email, deductible, carrier, adjuster, adjPhone, adjEmail, claimNum, contractAmt, downPayment, estimator, gm, lossType, dateOfLoss);
 
-  // 5. Append to Master Google Sheet if configured
+  // 5. Check for Custom Master Google Doc Template (URL or ID)
+  var masterTemplateId = (data.templateDocId || PropertiesService.getScriptProperties().getProperty('MASTER_TEMPLATE_ID') || '').toString().trim();
+  var filledTemplateDoc = null;
+  if (masterTemplateId) {
+    try {
+      filledTemplateDoc = fillDocumentTemplate(
+        masterTemplateId, 
+        currentJobFolder, 
+        data, 
+        {
+          contractAmt: contractAmt,
+          downPayment: downPayment,
+          midPayment: midPayment,
+          insPortion: insPortion,
+          deductible: deductible,
+          todayStr: todayStr
+        }
+      );
+    } catch (tmplErr) {
+      Logger.log('Template Fill Notice: ' + tmplErr.toString());
+    }
+  }
+
+  // 6. Append to Master Google Sheet if configured
   try {
     var masterSheetId = PropertiesService.getScriptProperties().getProperty('MASTER_SHEET_ID');
     if (masterSheetId) {
@@ -183,11 +211,23 @@ function processIntakeData(data) {
         downPayment,
         estimator,
         gm,
-        currentJobFolder.getUrl()
+        currentJobFolder.getUrl(),
+        filledTemplateDoc ? filledTemplateDoc.getUrl() : 'N/A'
       ]);
     }
   } catch (sheetErr) {
     Logger.log('Optional sheet logging notice: ' + sheetErr.toString());
+  }
+
+  var responseFiles = {
+    welcomeLetterUrl: welcomeDoc.getUrl(),
+    mortgageAuthUrl: mortgageDoc.getUrl(),
+    sraUrl: sraDoc.getUrl(),
+    productionChecklistUrl: checklistDoc.getUrl()
+  };
+
+  if (filledTemplateDoc) {
+    responseFiles.templateFilledUrl = filledTemplateDoc.getUrl();
   }
 
   return {
@@ -195,13 +235,12 @@ function processIntakeData(data) {
     folderUrl: currentJobFolder.getUrl(),
     jobNumber: jobNum,
     customerName: clientName,
-    files: {
-      welcomeLetterUrl: welcomeDoc.getUrl(),
-      mortgageAuthUrl: mortgageDoc.getUrl(),
-      sraUrl: sraDoc.getUrl(),
-      productionChecklistUrl: checklistDoc.getUrl()
-    },
-    message: 'Job folder "' + folderName + '" and 4 executive branded documents created successfully.'
+    templateDocId: masterTemplateId || null,
+    templateDocName: filledTemplateDoc ? filledTemplateDoc.getName() : null,
+    files: responseFiles,
+    message: filledTemplateDoc 
+      ? 'Customer folder "' + folderName + '", populated Master Template, and 4 branded executive documents generated successfully.'
+      : 'Customer folder "' + folderName + '" and 4 executive branded documents generated successfully.'
   };
 }
 
@@ -681,15 +720,275 @@ function generateProductionChecklist(folder, jobNum, clientName, address, phone,
   return doc;
 }
 
+// -------------------------------------------------------------
+// TEMPLATE ENGINE: CLONE MASTER GOOGLE DOC & REPLACE MERGE TAGS
+// -------------------------------------------------------------
+function fillDocumentTemplate(templateIdOrUrl, targetFolder, data, calcs) {
+  if (!templateIdOrUrl) return null;
+
+  // 1. Extract clean Document ID from full URL or bare ID
+  var docId = templateIdOrUrl.toString().trim();
+  var urlMatch = docId.match(/\\/d\\/([a-zA-Z0-9-_]+)/);
+  if (urlMatch && urlMatch[1]) {
+    docId = urlMatch[1];
+  }
+
+  try {
+    var templateFile = DriveApp.getFileById(docId);
+    var clientName = (data.customerName || data['Customer Name'] || 'Customer').toString().trim();
+    var jobNum = (data.jobNumber || data['Job Number'] || 'PENDING').toString().trim();
+
+    // 2. Clone template directly into customer's folder
+    var copyTitle = clientName + ' - ' + jobNum + ' - ' + templateFile.getName();
+    var copiedFile = templateFile.makeCopy(copyTitle, targetFolder);
+    var doc = DocumentApp.openById(copiedFile.getId());
+
+    var body = doc.getBody();
+    var header = doc.getHeader();
+    var footer = doc.getFooter();
+
+    // 3. Compile full dictionary of replacement tokens
+    var replacements = {
+      'CUSTOMER_NAME': clientName,
+      'JOB_NUMBER': jobNum,
+      'LOSS_ADDRESS': (data.lossAddress || data['Loss Address'] || '').toString().trim(),
+      'MAILING_ADDRESS': (data.mailingAddress || data.lossAddress || '').toString().trim(),
+      'PHONE': (data.phone || data['Phone Number'] || '').toString().trim(),
+      'ALT_PHONE': (data.altPhone || '').toString().trim(),
+      'EMAIL': (data.customerEmail || data.email || '').toString().trim(),
+
+      'INSURANCE_CARRIER': (data.carrier || data.insuranceCarrier || '').toString().trim(),
+      'CLAIM_NUMBER': (data.claimNumber || data['Claim #'] || '').toString().trim(),
+      'POLICY_NUMBER': (data.policyNumber || data['Policy #'] || '').toString().trim(),
+      'ADJUSTER_NAME': (data.adjusterName || data['Primary Adjuster Name'] || '').toString().trim(),
+      'ADJUSTER_PHONE': (data.adjusterPhone || '').toString().trim(),
+      'ADJUSTER_EMAIL': (data.adjusterEmail || '').toString().trim(),
+      'BROKER_INFO': (data.brokerInfo || '').toString().trim(),
+
+      'CONTRACT_AMOUNT': '$' + (Number(calcs.contractAmt) || 0).toLocaleString('en-US', { minimumFractionDigits: 2 }),
+      'DOWN_PAYMENT_50': '$' + (Number(calcs.downPayment) || 0).toLocaleString('en-US', { minimumFractionDigits: 2 }),
+      'MIDPOINT_25': '$' + (Number(calcs.midPayment) || 0).toLocaleString('en-US', { minimumFractionDigits: 2 }),
+      'COMPLETION_25': '$' + (Number(calcs.midPayment) || 0).toLocaleString('en-US', { minimumFractionDigits: 2 }),
+      'DEDUCTIBLE': '$' + (Number(calcs.deductible) || 0).toLocaleString('en-US', { minimumFractionDigits: 2 }),
+      'INSURANCE_PORTION': '$' + (Number(calcs.insPortion) || 0).toLocaleString('en-US', { minimumFractionDigits: 2 }),
+      'DEDUCTIBLE_COLLECTED': (data.deductibleCollected || 'No').toString().trim(),
+      'DEDUCTIBLE_PLAN': (data.deductiblePlan || 'Standard terms').toString().trim(),
+      'CARRIER_CHECK_SENT': (data.carrierCheckSent || 'Pending').toString().trim(),
+
+      'LOSS_TYPE': (data.lossType || 'Water').toString().trim(),
+      'DATE_OF_LOSS': (data.dateOfLoss || 'Recent').toString().trim(),
+      'LOSS_NARRATIVE': (data.lossNarrative || '').toString().trim(),
+
+      'ESTIMATOR_NAME': (data.estimator || BRAND.ESTIMATOR_NAME).toString().trim(),
+      'ESTIMATOR_TITLE': BRAND.ESTIMATOR_TITLE,
+      'ESTIMATOR_CELL': BRAND.CELL_PHONE,
+      'ESTIMATOR_EMAIL': BRAND.ESTIMATOR_EMAIL,
+      'SUPERVISOR_NAME': (data.supervisor || data.gm || BRAND.GM_NAME).toString().trim(),
+      'PROJECT_MANAGER': (data.projectManager || 'Unassigned').toString().trim(),
+
+      'COMPANY_NAME': BRAND.COMPANY_NAME,
+      'TAGLINE': BRAND.TAGLINE,
+      'DIVISION': BRAND.DIVISION,
+      'OFFICE_PHONE': BRAND.OFFICE_PHONE,
+      'OFFICE_ADDRESS': BRAND.ADDRESS,
+      'WEBSITE': BRAND.WEBSITE,
+
+      'DATE_TODAY': calcs.todayStr,
+      'YEAR_TODAY': new Date().getFullYear().toString()
+    };
+
+    // 4. Case-insensitive replacement function across paragraphs & table cells
+    function replaceInContainer(container) {
+      if (!container) return;
+      for (var key in replacements) {
+        var rawVal = replacements[key] || '';
+        // Escape backslashes and dollar signs for Java regex replacement safety in Google Apps Script
+        var safeVal = rawVal.toString().replace(/\\\\/g, '\\\\\\\\').replace(/\\$/g, '\\\\$');
+        // Match both {{KEY}} and {{key}} (case-insensitive)
+        container.replaceText('(?i)\\\\{\\\\{' + key + '\\\\}\\\\}', safeVal);
+      }
+    }
+
+    replaceInContainer(body);
+    if (header) replaceInContainer(header);
+    if (footer) replaceInContainer(footer);
+
+    doc.saveAndClose();
+    return copiedFile;
+  } catch (err) {
+    Logger.log('Template Fill Warning: ' + err.toString());
+    return null;
+  }
+}
+
 // Utility: Move created document to job subfolder safely
 function moveFileToFolder(fileId, folder) {
-  var file = DriveApp.getFileById(fileId);
-  folder.addFile(file);
   try {
-    DriveApp.getRootFolder().removeFile(file);
+    var file = DriveApp.getFileById(fileId);
+    if (typeof file.moveTo === 'function') {
+      file.moveTo(folder);
+    } else {
+      folder.addFile(file);
+      try {
+        DriveApp.getRootFolder().removeFile(file);
+      } catch (remErr) {
+        // Suppress root removal error
+      }
+    }
   } catch (e) {
-    // Suppress if already isolated
+    Logger.log('moveFile notice: ' + e.toString());
   }
+}
+
+// -------------------------------------------------------------
+// CHANGE ORDER PROCESSOR & DOCUMENT GENERATOR
+// -------------------------------------------------------------
+function processChangeOrder(data) {
+  // 1. Hub Folder setup
+  var hubFolderId = PropertiesService.getScriptProperties().getProperty('HUB_FOLDER_ID');
+  var rootFolder;
+  if (hubFolderId) {
+    try {
+      rootFolder = DriveApp.getFolderById(hubFolderId);
+    } catch (fErr) {
+      rootFolder = null;
+    }
+  }
+  if (!rootFolder) {
+    var folders = DriveApp.getFoldersByName('Hays + Sons - Job Packets Hub');
+    if (folders.hasNext()) {
+      rootFolder = folders.next();
+    } else {
+      rootFolder = DriveApp.createFolder('Hays + Sons - Job Packets Hub');
+    }
+    PropertiesService.getScriptProperties().setProperty('HUB_FOLDER_ID', rootFolder.getId());
+  }
+
+  // 2. Locate or create customer folder
+  var clientName = (data.customerName || 'Client').toString().trim();
+  var jobNum = (data.jobNumber || 'PENDING').toString().trim().toUpperCase();
+  var folderName = clientName ? clientName : (jobNum || 'New Client Packet');
+  var existingFolders = rootFolder.getFoldersByName(folderName);
+  var currentJobFolder = existingFolders.hasNext() ? existingFolders.next() : rootFolder.createFolder(folderName);
+
+  // 3. Generate Change Order Document
+  var coDoc = generateChangeOrderDoc(currentJobFolder, data);
+
+  // 4. Optional Master Google Sheet logging
+  try {
+    var masterSheetId = PropertiesService.getScriptProperties().getProperty('MASTER_SHEET_ID');
+    if (masterSheetId) {
+      var sheet = SpreadsheetApp.openById(masterSheetId).getActiveSheet();
+      sheet.appendRow([
+        new Date(),
+        jobNum,
+        clientName,
+        'CHANGE ORDER #' + (data.changeOrderNumber || 1),
+        data.changeType || 'Addition',
+        data.changeAmount || 0,
+        data.revisedContractTotal || 0,
+        data.details || '',
+        coDoc.getUrl()
+      ]);
+    }
+  } catch (sheetErr) {
+    Logger.log('Sheet notice: ' + sheetErr.toString());
+  }
+
+  return {
+    success: true,
+    folderUrl: currentJobFolder.getUrl(),
+    changeOrderDocUrl: coDoc.getUrl(),
+    jobNumber: jobNum,
+    customerName: clientName,
+    changeOrderNumber: data.changeOrderNumber || 1,
+    files: {
+      changeOrderDocUrl: coDoc.getUrl()
+    },
+    message: 'Change Order #' + (data.changeOrderNumber || 1) + ' document generated successfully in customer folder.'
+  };
+}
+
+function generateChangeOrderDoc(folder, data) {
+  var clientName = (data.customerName || 'Customer').toString().trim();
+  var jobNum = (data.jobNumber || 'PENDING').toString().trim().toUpperCase();
+  var coNum = data.changeOrderNumber || 1;
+  var docName = clientName + ' - Change Order #' + coNum;
+  var doc = DocumentApp.create(docName);
+  var body = doc.getBody();
+
+  var todayStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'America/Indiana/Indianapolis', 'MM/dd/yyyy');
+
+  applyExecutiveLetterhead(doc, 'Contract Change Order #' + coNum, 'SRA Modification', jobNum, todayStr);
+
+  // Section 1: Customer & Insurance info
+  addSectionHeader(body, '1. Project & Customer Identification');
+  addKeyValueGrid(body, [
+    ['Property Owner:', clientName, 'Job Number:', jobNum],
+    ['Loss Address:', data.lossAddress || 'Address on file', 'Change Order Date:', todayStr],
+    ['Phone / Email:', (data.phone || '') + ' ' + (data.customerEmail ? '(' + data.customerEmail + ')' : ''), 'Insurance / Claim:', (data.insuranceCarrier || 'Pending') + ' #' + (data.claimNumber || 'Pending')],
+    ['Project Estimator:', data.estimator || BRAND.ESTIMATOR_NAME, 'General Manager:', data.supervisor || BRAND.GM_NAME]
+  ]);
+
+  // Section 2: Financial Reconciliation Table
+  addSectionHeader(body, '2. Financial Accounting & Reconciliation');
+  var origAmt = Number(data.originalContractAmount) || 0;
+  var priorAmt = Number(data.priorChangesTotal) || 0;
+  var priorTotal = origAmt + priorAmt;
+  var thisAmt = Number(data.changeAmount) || 0;
+  var isDed = data.changeType === 'Deduction';
+  var signedThis = isDed ? -thisAmt : thisAmt;
+  var revisedTotal = Number(data.revisedContractTotal) || (priorTotal + signedThis);
+
+  var finRows = [
+    ['Accounting Item', 'Amount ($ USD)'],
+    ['1. Original Contract Price (SRA Base):', '$' + origAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })],
+    ['2. Net Prior Approved Change Orders:', (priorAmt >= 0 ? '+' : '') + '$' + priorAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })],
+    ['3. Contract Price Prior to this Change Order:', '$' + priorTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })],
+    ['4. THIS CHANGE ORDER #' + coNum + ' (' + (isDed ? 'CREDIT / DEDUCTION' : 'ADDITION') + '):', (isDed ? '-' : '+') + '$' + thisAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })],
+    ['5. REVISED TOTAL CONTRACT PRICE:', '$' + revisedTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })]
+  ];
+  addKeyValueGrid(body, finRows);
+
+  // Section 3: Scope of Work / Details
+  addSectionHeader(body, '3. Scope of Work / Specification Modifications');
+  var pScope = body.appendParagraph((data.details || 'Scope modification as agreed with property owner/carrier.').toString());
+  pScope.setFontFamily('Arial').setFontSize(8.5).setForegroundColor(BRAND.TEXT_MAIN).setSpacingBefore(2).setSpacingAfter(4);
+
+  // Line items if present
+  if (data.lineItems && data.lineItems.length > 0) {
+    var itemRows = [['Item Description', 'Amount']];
+    for (var i = 0; i < data.lineItems.length; i++) {
+      var itm = data.lineItems[i];
+      var itmAmt = Number(itm.amount) || 0;
+      itemRows.push([itm.description || 'Item #' + (i + 1), '$' + itmAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })]);
+    }
+    addKeyValueGrid(body, itemRows);
+  }
+
+  // Payment Terms & Schedule Impact
+  var pTerms = body.appendParagraph('Payment Terms: ' + (data.paymentTerms || 'Billed to Insurance Supplement') + '   |   Schedule Impact: ' + (data.scheduleImpactDays > 0 ? '+' + data.scheduleImpactDays + ' working days' : 'No delay'));
+  pTerms.setFontFamily('Arial').setFontSize(8).setBold(true).setForegroundColor(BRAND.DARK).setSpacingBefore(2).setSpacingAfter(4);
+
+  // Statutory Disclosures
+  var pLegal = body.appendParagraph(
+    'In accordance with Indiana Code 24-5-11 (Indiana Home Improvement Contracts Act), this Change Order represents an agreed-upon modification to the original scope and price. ' +
+    'All other terms and conditions of the original Structural Repair Agreement remain in full force and effect.'
+  );
+  pLegal.setFontFamily('Arial').setFontSize(7.5).setItalic(true).setForegroundColor(BRAND.TEXT_MUTED).setSpacingBefore(4).setSpacingAfter(8);
+
+  // Signatures
+  addSectionHeader(body, '4. Authorization & Signatures');
+  var sigTable = body.appendTable([
+    ['Property Owner Signature: _______________________', 'Hays + Sons Representative: _______________________'],
+    ['Printed Name: ' + clientName, 'Printed Name: ' + (data.estimator || BRAND.ESTIMATOR_NAME)],
+    ['Date: _____/_____/_________', 'Date: ' + todayStr]
+  ]);
+  sigTable.setBorderWidth(0);
+
+  doc.saveAndClose();
+  moveFileToFolder(doc.getId(), folder);
+  return doc;
 }
 `;
 
@@ -700,8 +999,43 @@ export const AppsScriptCodeModal: React.FC<AppsScriptCodeModalProps> = ({
   scriptUrl,
 }) => {
   const [copied, setCopied] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
   if (!isOpen) return null;
+
+  const handleTestConnection = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await fetch(scriptUrl, { method: 'GET', redirect: 'follow' });
+      const text = await res.text();
+      let parsed: any;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = null;
+      }
+      if (parsed && (parsed.status === 'ONLINE' || parsed.service)) {
+        setTestResult({
+          success: true,
+          message: `Verified! ${parsed.service || 'Service Online'} - ${parsed.version || 'v3.0'}`,
+        });
+      } else {
+        setTestResult({
+          success: true,
+          message: `Endpoint reachable (${res.status} OK)`,
+        });
+      }
+    } catch (err: any) {
+      setTestResult({
+        success: false,
+        message: `Connection issue: ${err.message || 'Failed to reach endpoint'}`,
+      });
+    } finally {
+      setTesting(false);
+    }
+  };
 
   const handleCopy = async () => {
     try {
@@ -754,18 +1088,18 @@ export const AppsScriptCodeModal: React.FC<AppsScriptCodeModalProps> = ({
 
         {/* Brand Highlights Bar */}
         <div className="bg-slate-900 px-6 py-2.5 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
-          <div className="flex items-center gap-4 text-slate-300">
+          <div className="flex flex-wrap items-center gap-4 text-slate-300">
             <div className="flex items-center gap-1.5">
               <span className="w-2.5 h-2.5 rounded-sm bg-[#D32F2F]" />
-              <span className="font-semibold text-white">Crimson Accent (#D32F2F)</span>
+              <span className="font-semibold text-white">Crimson Letterhead (#D32F2F)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <FileText className="w-3.5 h-3.5 text-amber-400" />
+              <span className="font-semibold text-amber-300">Master Template Cloning & Merge Tags</span>
             </div>
             <div className="flex items-center gap-1.5">
               <span className="w-2.5 h-2.5 rounded-sm bg-[#111827] border border-slate-600" />
-              <span>Charcoal Titles (#111827)</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <FileText className="w-3.5 h-3.5 text-red-400" />
-              <span>4 Complete Executive Documents</span>
+              <span>4 Executive Docs</span>
             </div>
           </div>
           <div className="text-[11px] text-slate-400 font-mono">
@@ -827,11 +1161,32 @@ export const AppsScriptCodeModal: React.FC<AppsScriptCodeModalProps> = ({
         </div>
 
         {/* Modal Footer */}
-        <div className="bg-slate-100 px-6 py-3.5 border-t border-slate-200 flex items-center justify-between">
-          <div className="text-xs text-slate-600 truncate max-w-lg">
-            Active Endpoint: <span className="font-mono font-medium text-slate-800">{scriptUrl}</span>
+        <div className="bg-slate-100 px-6 py-3.5 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="text-xs text-slate-600 flex flex-col gap-1 min-w-0">
+            <div className="flex items-center gap-2 truncate">
+              <span className="font-semibold text-slate-700">Active Endpoint:</span>
+              <span className="font-mono text-slate-800 truncate text-[11px] bg-white px-2 py-0.5 rounded border border-slate-300">{scriptUrl}</span>
+              <button
+                type="button"
+                onClick={handleTestConnection}
+                disabled={testing}
+                className="px-2.5 py-1 rounded text-[11px] font-bold bg-slate-200 hover:bg-slate-300 text-slate-800 transition-colors disabled:opacity-50 shrink-0"
+              >
+                {testing ? 'Testing...' : 'Test Connection'}
+              </button>
+            </div>
+            {testResult && (
+              <div
+                className={`text-[11px] font-medium flex items-center gap-1.5 ${
+                  testResult.success ? 'text-emerald-700' : 'text-red-700'
+                }`}
+              >
+                <span className={`w-2 h-2 rounded-full ${testResult.success ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`} />
+                {testResult.message}
+              </div>
+            )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
               onClick={handleCopy}
