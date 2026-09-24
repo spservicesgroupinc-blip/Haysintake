@@ -1,0 +1,6 @@
+{
+  "name": "Hays + Sons Restoration Estimator Portal",
+  "description": "Executive intake portal for Hays + Sons estimators to initiate restoration files, auto-calculate milestone payments, and generate automated contract document packets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
